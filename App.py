@@ -1,8 +1,7 @@
-# App.py — Gujarati Bloom Question Type Analyzer (HCI UI + Sunburst) ✅
-# Works with saved model as:
-# 1) Pipeline/Estimator (has .predict)
-# 2) dict {"vectorizer":..., "model":...} (or similar keys)
-# 3) tuple/list (vectorizer, model)
+# App.py — Bloom Question Type Analyzer (Gujarati/Hindi/English) ✅ HCI UI + Donut Hover Questions
+# - Clean sidebar (only Language dropdown)
+# - Auto-loads model based on language
+# - One chart only (Donut). Hover shows questions under that class.
 
 import os
 import re
@@ -16,7 +15,7 @@ import plotly.express as px
 # 1) Page Config + Styling (Light + Attractive)
 # ---------------------------
 st.set_page_config(
-    page_title="Gujarati Bloom Question Type Analyzer",
+    page_title="Bloom Question Type Analyzer",
     page_icon="🧠",
     layout="wide"
 )
@@ -80,46 +79,52 @@ section[data-testid="stSidebar"] {
 }
 
 /* Textarea */
-textarea {
-  border-radius: 14px !important;
-}
+textarea { border-radius: 14px !important; }
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-# Header
-st.title("🧠 Gujarati Bloom Question Type Analyzer")
+st.title("🧠 Bloom Question Type Analyzer")
 st.markdown(
-    "<div class='helper'>Paste Gujarati questions (line-by-line or paragraph). "
-    "Click <b>Analyze</b> to predict type, group results, and visualize distribution.</div>",
+    "<div class='helper'>Paste questions (line-by-line or paragraph). "
+    "Select language and click <b>Analyze</b> to predict type, group results, and visualize distribution.</div>",
     unsafe_allow_html=True
 )
 
 # ---------------------------
-# 2) Text Utilities
+# 2) Text Utilities (Language-aware)
 # ---------------------------
-def clean_gujarati_text(text: str) -> str:
+def clean_text(text: str, lang: str) -> str:
     if not isinstance(text, str):
         return ""
     text = text.strip()
     text = re.sub(r"\s+", " ", text)
-    # keep Gujarati + digits + punctuation + English letters (AI/GDP/UPI)
-    text = re.sub(r"[^૦-૯0-9\u0A80-\u0AFFA-Za-z\s\?\.\,\-\/\(\)%:;']", " ", text)
+
+    if lang == "Gujarati":
+        # Gujarati block + digits + English + punctuation
+        text = re.sub(r"[^૦-૯0-9\u0A80-\u0AFFA-Za-z\s\?\.\,\-\/\(\)%:;'\u0964]", " ", text)
+    elif lang == "Hindi":
+        # Devanagari block + digits + English + punctuation + danda
+        text = re.sub(r"[^0-9०-९\u0900-\u097FA-Za-z\s\?\.\,\-\/\(\)%:;'\u0964]", " ", text)
+    else:  # English
+        # Keep letters/digits/basic punctuation (don't over-clean)
+        text = re.sub(r"[^A-Za-z0-9\s\?\.\,\-\/\(\)%:;']", " ", text)
+
     text = re.sub(r"(\?){2,}", "?", text)
     text = re.sub(r"(\.){2,}", ".", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
-def extract_questions(raw: str):
+def extract_questions(raw: str, lang: str):
     """
     Supports:
     - line-by-line input
     - paragraph input
-    Splits by newline then by '?' while keeping '?'
+    Splits by newline then by '?'
     """
     if not raw:
         return []
-    raw = raw.replace("।", ".")
+    raw = raw.replace("।", ".")  # normalize danda to dot for splitting consistency
     lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
     if not lines and raw.strip():
         lines = [raw.strip()]
@@ -139,10 +144,9 @@ def extract_questions(raw: str):
         if buf.strip():
             qs.append(buf.strip())
 
-    # clean + dedupe
     final, seen = [], set()
     for q in qs:
-        q2 = clean_gujarati_text(q)
+        q2 = clean_text(q, lang)
         if q2 and q2 not in seen:
             final.append(q2)
             seen.add(q2)
@@ -151,24 +155,27 @@ def extract_questions(raw: str):
 # ---------------------------
 # 3) Robust Model Loading + Prediction
 # ---------------------------
+MODEL_FILES = {
+    "Gujarati": "Correct_model_gujarati_bloom_lr_tfidf.joblib",
+    "Hindi": "Correct_model_Hindi_bloom_lr_tfidf.joblib",
+    "English": "Correct_model_English_bloom_lr_tfidf.joblib",
+}
+
 @st.cache_resource
-def load_raw(model_path: str):
-    return joblib.load(model_path)
+def load_raw(path: str):
+    return joblib.load(path)
 
 def normalize_loaded_object(obj):
-    # A) direct pipeline/estimator
     if hasattr(obj, "predict"):
         return {"kind": "pipeline", "pipeline": obj}
 
-    # B) dict with model + vectorizer
     if isinstance(obj, dict):
         model = obj.get("model") or obj.get("clf") or obj.get("classifier")
         vect  = obj.get("vectorizer") or obj.get("tfidf") or obj.get("vect")
         if model is not None and vect is not None and hasattr(model, "predict") and hasattr(vect, "transform"):
             return {"kind": "vect_model", "model": model, "vectorizer": vect}
-        return {"kind": "unknown_dict", "raw": obj, "keys": list(obj.keys())}
+        return {"kind": "unknown_dict", "keys": list(obj.keys()), "raw": obj}
 
-    # C) tuple/list (vectorizer, model) or (model, vectorizer)
     if isinstance(obj, (tuple, list)) and len(obj) == 2:
         a, b = obj
         if hasattr(a, "transform") and hasattr(b, "predict"):
@@ -203,45 +210,35 @@ def predict_with_confidence(loaded, texts):
 
     if loaded["kind"] == "unknown_dict":
         raise AttributeError(
-            f"Your .joblib contains a dict with keys: {loaded['keys']}. "
-            f"Expected keys like ('vectorizer','model') or a Pipeline with .predict()."
+            f"Model is a dict with keys: {loaded['keys']} (unsupported). "
+            f"Save as a Pipeline OR dict with ('vectorizer','model')."
         )
-
-    raise AttributeError(
-        "Loaded object is not a valid sklearn Pipeline OR (vectorizer+model). "
-        "Please re-save your model properly."
-    )
+    raise AttributeError("Unsupported model object. Save as sklearn Pipeline or (vectorizer+model).")
 
 # ---------------------------
-# 4) Sidebar
+# 4) Sidebar (Only Language dropdown — no extra text)
 # ---------------------------
-st.sidebar.header("⚙️ Settings")
+lang = st.sidebar.selectbox(
+    "Language",
+    ["Gujarati", "Hindi", "English"],
+    index=0,
+    label_visibility="collapsed"
+)
 
-available_models = sorted([f for f in os.listdir(".") if f.lower().endswith((".joblib", ".pkl"))])
-if not available_models:
-    st.error("❌ No .joblib/.pkl found in this folder. Upload/commit your model file into the repo.")
+model_path = MODEL_FILES[lang]
+if not os.path.exists(model_path):
+    st.error(f"❌ Model file not found: {model_path}\n\nUpload it in the same folder as App.py.")
     st.stop()
 
-MODEL_PATH = st.sidebar.selectbox("Model file", available_models, index=0)
-show_confidence = st.sidebar.toggle("Show confidence", value=True)
-expand_groups = st.sidebar.toggle("Expand groups", value=False)
-
-# Load and normalize model
 try:
-    raw_obj = load_raw(MODEL_PATH)
+    raw_obj = load_raw(model_path)
     loaded = normalize_loaded_object(raw_obj)
     if loaded["kind"] in ("unknown", "unknown_dict"):
-        st.sidebar.error("❌ Model format not supported.")
-        with st.sidebar.expander("Debug info"):
-            st.write("Loaded kind:", loaded["kind"])
-            if loaded["kind"] == "unknown_dict":
-                st.write("Keys:", loaded.get("keys"))
-            st.write("Type:", type(raw_obj))
+        st.error("❌ Model format not supported. Please save as Pipeline or (vectorizer+model).")
         st.stop()
-    st.sidebar.success(f"✅ Model loaded ({loaded['kind']})")
 except Exception as e:
-    st.sidebar.error("❌ Model could not be loaded.")
-    st.sidebar.exception(e)
+    st.error("❌ Model could not be loaded.")
+    st.exception(e)
     st.stop()
 
 # ---------------------------
@@ -256,21 +253,36 @@ with tab1:
     st.markdown("<div class='card'>", unsafe_allow_html=True)
     st.subheader("Input Questions")
 
-    raw_input = st.text_area(
-        "Questions",
-        value="",
-        placeholder="ઉદાહરણ (એક લાઇનમાં એક પ્રશ્ન લખો):\n"
+    placeholder_map = {
+        "Gujarati": "ઉદાહરણ (એક લાઇનમાં એક પ્રશ્ન લખો):\n"
                     "AI મોડલ ટ્રેનિંગમાં ડેટા બાયસ કેમ થાય છે?\n"
                     "કેશ પેમેન્ટ અને UPI વચ્ચે તફાવત શું છે?\n"
                     "જો ગ્લોબલ વોર્મિંગ 2°C વધે તો કૃષિ પર શું થશે?\n"
                     "તમે ઘર માટે પાણી બચત યોજના 3 પગલાંમાં બનાવો.",
-        height=230
+        "Hindi": "उदाहरण (एक लाइन में एक प्रश्न लिखें):\n"
+                 "AI मॉडल प्रशिक्षण में डेटा बायस क्यों होता है?\n"
+                 "नकद भुगतान और UPI के बीच क्या अंतर है?\n"
+                 "यदि ग्लोबल वार्मिंग 2°C बढ़ जाए तो कृषि पर क्या प्रभाव पड़ेगा?\n"
+                 "घर के लिए पानी बचत की 3-चरणों वाली योजना बनाइए.",
+        "English": "Example (one question per line):\n"
+                   "What factors lead to data bias during AI model training?\n"
+                   "How do cash payments and UPI differ in practice?\n"
+                   "If global warming rises by 2°C, what impacts are likely for agriculture?\n"
+                   "Create a 3-step plan for saving water at home."
+    }
+
+    raw_input = st.text_area(
+        "Questions",
+        value="",
+        placeholder=placeholder_map[lang],
+        height=230,
+        label_visibility="collapsed"
     )
 
     st.markdown(
         "<span class='pill'>Paragraph supported</span>"
         "<span class='pill'>Line-by-line</span>"
-        "<span class='pill'>Gujarati + Tech terms</span>",
+        "<span class='pill'>Tech terms supported</span>",
         unsafe_allow_html=True
     )
 
@@ -287,7 +299,7 @@ with tab1:
         st.success("Cleared results. Paste new questions and click Analyze.")
 
     if analyze:
-        questions = extract_questions(raw_input)
+        questions = extract_questions(raw_input, lang)
         if not questions:
             st.warning("No valid questions found. Please paste at least one question.")
         else:
@@ -297,7 +309,9 @@ with tab1:
                 "question": questions,
                 "predicted_type": preds
             })
-            if show_confidence and conf is not None:
+
+            # Show confidence only if available
+            if conf is not None:
                 df_out["confidence"] = np.round(conf, 4)
 
             st.session_state.df_out = df_out
@@ -326,7 +340,7 @@ with tab2:
         grouped = df_out.groupby("predicted_type")["question"].apply(list).to_dict()
 
         for cls in sorted(grouped.keys()):
-            with st.expander(f"{cls} (Total: {len(grouped[cls])})", expanded=expand_groups):
+            with st.expander(f"{cls} (Total: {len(grouped[cls])})", expanded=False):
                 for i, q in enumerate(grouped[cls], start=1):
                     st.write(f"{i}. {q}")
         st.markdown("</div>", unsafe_allow_html=True)
@@ -336,50 +350,58 @@ with tab3:
     if df_out is None:
         st.info("No results yet. Analyze some questions to see charts.")
     else:
-        counts = df_out["predicted_type"].value_counts().sort_values(ascending=False).reset_index()
-        counts.columns = ["type", "count"]
+        # counts + questions per class
+        grouped = df_out.groupby("predicted_type")["question"].apply(list).to_dict()
+        counts = df_out["predicted_type"].value_counts().sort_values(ascending=False)
+
+        counts_df = pd.DataFrame({
+            "type": counts.index,
+            "count": counts.values
+        })
+
+        # Build hover question list (ALL questions)
+        # (HTML line breaks work in Plotly hover)
+        hover_q = []
+        for t in counts_df["type"]:
+            qs = grouped.get(t, [])
+            # bullet list in hover
+            html = "<br>".join([f"• {q}" for q in qs])
+            hover_q.append(html)
+
+        counts_df["questions_html"] = hover_q
 
         # KPIs
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Total Questions", int(len(df_out)))
         c2.metric("Unique Types", int(df_out["predicted_type"].nunique()))
-        c3.metric("Most Frequent Type", str(counts.loc[0, "type"]))
-        c4.metric("Max Count", int(counts.loc[0, "count"]))
+        c3.metric("Most Frequent Type", str(counts_df.loc[0, "type"]))
+        c4.metric("Max Count", int(counts_df.loc[0, "count"]))
 
         st.markdown("<div class='card'>", unsafe_allow_html=True)
-        st.subheader("Sunburst (Attractive Bloom Distribution)")
+        st.subheader("Donut Chart (Hover to see questions)")
 
-        # Sunburst chart: Root -> Type
-        sun_df = pd.DataFrame({
-            "Root": ["Bloom Types"] * len(counts),
-            "Type": counts["type"],
-            "Count": counts["count"]
-        })
-
-        fig_sun = px.sunburst(
-            sun_df,
-            path=["Root", "Type"],
-            values="Count",
-            title="Bloom Types Distribution (Sunburst)"
-        )
-        fig_sun.update_layout(margin=dict(t=45, l=10, r=10, b=10))
-        st.plotly_chart(fig_sun, use_container_width=True)
-
-        st.subheader("Donut Chart (Quick View)")
-        fig_pie = px.pie(
-            counts,
+        fig = px.pie(
+            counts_df,
             names="type",
             values="count",
-            hole=0.45,
-            title="Type Share (Donut)"
+            hole=0.45
         )
-        fig_pie.update_layout(margin=dict(t=45, l=10, r=10, b=10))
-        st.plotly_chart(fig_pie, use_container_width=True)
+
+        # Put the questions into hover via customdata
+        fig.update_traces(
+            customdata=np.stack([counts_df["questions_html"]], axis=-1),
+            hovertemplate="<b>%{label}</b><br>"
+                          "Count: %{value}<br><br>"
+                          "%{customdata[0]}"
+                          "<extra></extra>"
+        )
+
+        fig.update_layout(margin=dict(t=10, l=10, r=10, b=10))
+        st.plotly_chart(fig, use_container_width=True)
 
         st.subheader("Heatmap-like Table")
-        heat_df = counts.set_index("type").T  # one row: count
-        styled = heat_df.style.background_gradient(axis=None)
-        st.dataframe(styled, use_container_width=True)
+        heat_df = counts_df.set_index("type")[["count"]].T
+        st.dataframe(heat_df.style.background_gradient(axis=None), use_container_width=True)
 
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -389,4 +411,4 @@ with tab3:
         )
 
 st.markdown("---")
-st.caption("HCI-friendly UI • Gujarati NLP • Bloom Taxonomy Classification • Sunburst Visualization")
+st.caption("HCI-friendly UI • Gujarati/Hindi/English NLP • Bloom Taxonomy Classification")
