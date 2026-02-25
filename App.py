@@ -1,4 +1,4 @@
-# App.py — HCI-friendly UI (Gujarati Bloom Question Type Analyzer) ✅ Robust + Cloud-safe
+# App.py — Gujarati Bloom Question Type Analyzer (HCI UI + Sunburst) ✅
 # Works with saved model as:
 # 1) Pipeline/Estimator (has .predict)
 # 2) dict {"vectorizer":..., "model":...} (or similar keys)
@@ -10,9 +10,10 @@ import joblib
 import numpy as np
 import pandas as pd
 import streamlit as st
+import plotly.express as px
 
 # ---------------------------
-# 1) Page Config + Styling
+# 1) Page Config + Styling (Light + Attractive)
 # ---------------------------
 st.set_page_config(
     page_title="Gujarati Bloom Question Type Analyzer",
@@ -22,44 +23,75 @@ st.set_page_config(
 
 CUSTOM_CSS = """
 <style>
+/* Light, cool background */
 .stApp {
-  background: radial-gradient(circle at 20% 10%, rgba(99,102,241,0.15) 0%, rgba(0,0,0,0) 45%),
-              radial-gradient(circle at 80% 0%, rgba(16,185,129,0.12) 0%, rgba(0,0,0,0) 40%),
-              linear-gradient(180deg, rgba(15, 23, 42, 0.92), rgba(2, 6, 23, 0.95));
+  background:
+    radial-gradient(circle at 15% 15%, rgba(99,102,241,0.18) 0%, rgba(255,255,255,0) 45%),
+    radial-gradient(circle at 85% 10%, rgba(16,185,129,0.14) 0%, rgba(255,255,255,0) 40%),
+    radial-gradient(circle at 70% 90%, rgba(236,72,153,0.12) 0%, rgba(255,255,255,0) 45%),
+    linear-gradient(180deg, #F8FAFF 0%, #F4FBFF 45%, #F9F5FF 100%);
 }
+
+/* Main container */
 .block-container {padding-top: 1.1rem; padding-bottom: 2rem; max-width: 1200px;}
-h1 {margin-bottom: 0.25rem;}
+
+/* Titles */
+h1 {margin-bottom: 0.25rem; color: #0F172A;}
+h2, h3 {color: #0F172A;}
+p, li, label, div {color: #0F172A;}
+
+/* Card */
 .card {
-  background: rgba(255,255,255,0.06);
-  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.72);
+  border: 1px solid rgba(15,23,42,0.10);
   border-radius: 18px;
   padding: 14px 16px;
-  box-shadow: 0 10px 30px rgba(0,0,0,0.18);
+  box-shadow: 0 14px 32px rgba(2,6,23,0.08);
+  backdrop-filter: blur(6px);
 }
-.helper {opacity: 0.90; font-size: 0.95rem; line-height: 1.35rem;}
+
+/* Helper text */
+.helper {opacity: 0.90; font-size: 0.95rem; line-height: 1.35rem; color: #334155;}
+
+/* Pill */
 .pill {
   display:inline-block;
   padding: 0.22rem 0.60rem;
   border-radius: 999px;
-  border: 1px solid rgba(255,255,255,0.18);
-  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(15,23,42,0.12);
+  background: rgba(255,255,255,0.75);
   margin-right: 0.35rem;
   margin-top: 0.35rem;
   font-size: 0.85rem;
+  color: #0F172A;
 }
+
+/* Buttons */
 .stButton>button {
   border-radius: 12px;
   padding: 0.55rem 0.85rem;
-  font-weight: 600;
+  font-weight: 700;
+}
+
+/* Sidebar */
+section[data-testid="stSidebar"] {
+  background: rgba(255,255,255,0.70) !important;
+  border-right: 1px solid rgba(15,23,42,0.08);
+}
+
+/* Textarea */
+textarea {
+  border-radius: 14px !important;
 }
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
+# Header
 st.title("🧠 Gujarati Bloom Question Type Analyzer")
 st.markdown(
     "<div class='helper'>Paste Gujarati questions (line-by-line or paragraph). "
-    "Click <b>Analyze</b> to predict type, group results, and see which Bloom types dominate.</div>",
+    "Click <b>Analyze</b> to predict type, group results, and visualize distribution.</div>",
     unsafe_allow_html=True
 )
 
@@ -107,6 +139,7 @@ def extract_questions(raw: str):
         if buf.strip():
             qs.append(buf.strip())
 
+    # clean + dedupe
     final, seen = [], set()
     for q in qs:
         q2 = clean_gujarati_text(q)
@@ -123,12 +156,6 @@ def load_raw(model_path: str):
     return joblib.load(model_path)
 
 def normalize_loaded_object(obj):
-    """
-    Returns a normalized dict with keys:
-    - kind: 'pipeline' OR 'vect_model'
-    - pipeline: sklearn pipeline (optional)
-    - vectorizer, model: for separate components (optional)
-    """
     # A) direct pipeline/estimator
     if hasattr(obj, "predict"):
         return {"kind": "pipeline", "pipeline": obj}
@@ -139,7 +166,6 @@ def normalize_loaded_object(obj):
         vect  = obj.get("vectorizer") or obj.get("tfidf") or obj.get("vect")
         if model is not None and vect is not None and hasattr(model, "predict") and hasattr(vect, "transform"):
             return {"kind": "vect_model", "model": model, "vectorizer": vect}
-        # If it's dict but different keys, still show helpful error
         return {"kind": "unknown_dict", "raw": obj, "keys": list(obj.keys())}
 
     # C) tuple/list (vectorizer, model) or (model, vectorizer)
@@ -153,10 +179,6 @@ def normalize_loaded_object(obj):
     return {"kind": "unknown", "raw": obj}
 
 def predict_with_confidence(loaded, texts):
-    """
-    texts: list[str]
-    returns preds (np.array), conf (np.array or None)
-    """
     texts = list(texts)
 
     if loaded["kind"] == "pipeline":
@@ -179,7 +201,6 @@ def predict_with_confidence(loaded, texts):
             conf = np.max(proba, axis=1)
         return preds, conf
 
-    # Helpful errors
     if loaded["kind"] == "unknown_dict":
         raise AttributeError(
             f"Your .joblib contains a dict with keys: {loaded['keys']}. "
@@ -192,7 +213,7 @@ def predict_with_confidence(loaded, texts):
     )
 
 # ---------------------------
-# 4) Sidebar (clean)
+# 4) Sidebar
 # ---------------------------
 st.sidebar.header("⚙️ Settings")
 
@@ -203,7 +224,7 @@ if not available_models:
 
 MODEL_PATH = st.sidebar.selectbox("Model file", available_models, index=0)
 show_confidence = st.sidebar.toggle("Show confidence", value=True)
-expand_groups = st.sidebar.toggle("Expand groups by default", value=False)
+expand_groups = st.sidebar.toggle("Expand groups", value=False)
 
 # Load and normalize model
 try:
@@ -226,7 +247,7 @@ except Exception as e:
 # ---------------------------
 # 5) Main Tabs
 # ---------------------------
-tab1, tab2, tab3 = st.tabs(["📝 Analyze", "📊 Results", "💡 Insights"])
+tab1, tab2, tab3 = st.tabs(["📝 Analyze", "📊 Results", "✨ Visual Insights"])
 
 if "df_out" not in st.session_state:
     st.session_state.df_out = None
@@ -313,34 +334,59 @@ with tab2:
 with tab3:
     df_out = st.session_state.df_out
     if df_out is None:
-        st.info("No results yet. Analyze some questions to see insights.")
+        st.info("No results yet. Analyze some questions to see charts.")
     else:
-        counts = df_out["predicted_type"].value_counts().sort_values(ascending=False)
+        counts = df_out["predicted_type"].value_counts().sort_values(ascending=False).reset_index()
+        counts.columns = ["type", "count"]
 
+        # KPIs
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Total Questions", int(len(df_out)))
         c2.metric("Unique Types", int(df_out["predicted_type"].nunique()))
-        c3.metric("Most Frequent Type", str(counts.index[0]))
-        c4.metric("Max Count", int(counts.iloc[0]))
+        c3.metric("Most Frequent Type", str(counts.loc[0, "type"]))
+        c4.metric("Max Count", int(counts.loc[0, "count"]))
 
         st.markdown("<div class='card'>", unsafe_allow_html=True)
-        st.subheader("Distribution")
+        st.subheader("Sunburst (Attractive Bloom Distribution)")
 
-        # Bar chart (Streamlit-native, cloud-safe)
-        st.bar_chart(counts)
+        # Sunburst chart: Root -> Type
+        sun_df = pd.DataFrame({
+            "Root": ["Bloom Types"] * len(counts),
+            "Type": counts["type"],
+            "Count": counts["count"]
+        })
 
-        # Heatmap-like table (styler)
-        heat_df = counts.to_frame(name="Count").T  # 1 row
+        fig_sun = px.sunburst(
+            sun_df,
+            path=["Root", "Type"],
+            values="Count",
+            title="Bloom Types Distribution (Sunburst)"
+        )
+        fig_sun.update_layout(margin=dict(t=45, l=10, r=10, b=10))
+        st.plotly_chart(fig_sun, use_container_width=True)
+
+        st.subheader("Donut Chart (Quick View)")
+        fig_pie = px.pie(
+            counts,
+            names="type",
+            values="count",
+            hole=0.45,
+            title="Type Share (Donut)"
+        )
+        fig_pie.update_layout(margin=dict(t=45, l=10, r=10, b=10))
+        st.plotly_chart(fig_pie, use_container_width=True)
+
+        st.subheader("Heatmap-like Table")
+        heat_df = counts.set_index("type").T  # one row: count
         styled = heat_df.style.background_gradient(axis=None)
-        st.write("Heatmap view (darker = higher count):")
         st.dataframe(styled, use_container_width=True)
 
         st.markdown("</div>", unsafe_allow_html=True)
 
         st.markdown(
-            "<div class='helper'>Interpretation: If one type dominates, your input set is biased toward that Bloom level.</div>",
+            "<div class='helper'>Interpretation: If one type dominates, your input is biased toward that Bloom level.</div>",
             unsafe_allow_html=True
         )
 
 st.markdown("---")
-st.caption("HCI-friendly UI • Gujarati NLP • Bloom Taxonomy Classification")
+st.caption("HCI-friendly UI • Gujarati NLP • Bloom Taxonomy Classification • Sunburst Visualization")
